@@ -6,14 +6,8 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     healthCheckPath: /health
-    disk:
-      name: bot-data
-      mountPath: /data
-      sizeGB: 1
     envVars:
       - key: PORT
         value: 10000
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: DB_PATH
-        value: /data/giveaway.db

@@ -7,10 +7,12 @@ from logger import log
 
 
 async def init_db() -> None:
-    # DB fayli uchun papkani yaratish (masalan /data Render'da)
+    # DB uchun papkani yaratish; ruxsat yo'q bo'lsa o'tkazib yuboriladi
     db_dir = os.path.dirname(os.path.abspath(DB_PATH))
-    os.makedirs(db_dir, exist_ok=True)
-    log.info(f"📁  DB papkasi: {db_dir}")
+    try:
+        os.makedirs(db_dir, exist_ok=True)
+    except PermissionError:
+        log.warning(f"⚠️  '{db_dir}' papkasiga ruxsat yo'q — DB joriy papkada yaratiladi")
 
     try:
         async with aiosqlite.connect(DB_PATH) as db:
