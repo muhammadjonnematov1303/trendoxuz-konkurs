@@ -156,12 +156,19 @@ async def handle_contact(message: Message, bot: Bot) -> None:
         )
         return
 
-    added = await add_participant(
-        user_id=user.id,
-        username=user.username,
-        full_name=user.full_name,
-        phone=contact.phone_number,
-    )
+    try:
+        added = await add_participant(
+            user_id=user.id,
+            username=user.username,
+            full_name=user.full_name,
+            phone=contact.phone_number,
+        )
+    except Exception as e:
+        log.error(f"❌  add_participant exception (user_id={user.id}): {e}")
+        await message.answer(
+            "⚠️ Texnik xatolik yuz berdi. Iltimos, qayta urinib ko'ring.",
+        )
+        return
 
     if not added:
         await message.answer(
