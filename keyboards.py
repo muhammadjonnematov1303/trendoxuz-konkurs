@@ -25,10 +25,11 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def registered_kb() -> InlineKeyboardMarkup:
+def registered_kb(channel: str | None = None) -> InlineKeyboardMarkup:
     """Ro'yxatdan o'tgandan so'ng."""
+    url = f"https://t.me/{channel.lstrip('@')}" if channel else _channel_url()
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Kanalga o'tish", url=_channel_url())],
+        [InlineKeyboardButton(text="📢 Kanalga o'tish", url=url)],
     ])
 
 

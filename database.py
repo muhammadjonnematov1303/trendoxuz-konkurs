@@ -89,6 +89,12 @@ async def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_participants_joined
                 ON participants(joined_at)
             """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
         log.info("✅  PostgreSQL bazasi tayyor")
     except Exception as e:
         log.error(f"❌  DB init xatosi: {e}")
@@ -217,3 +223,33 @@ async def get_recent_logs(limit: int = 40) -> list[dict]:
     except Exception as e:
         log.error(f"❌  get_recent_logs xatosi: {e}")
         return []
+
+
+async def get_setting(key: str) -> str | None:
+    """settings jadvalidan qiymat olish."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT value FROM settings WHERE key = $1", key
+            )
+    except Exception as e:
+        log.error(f"❌  get_setting xatosi ({key}): {e}")
+        return None
+
+
+async def set_setting(key: str, value: str) -> None:
+    """settings jadvaliga qiymat yozish (upsert)."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO settings (key, value) VALUES ($1, $2)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                """,
+                key, value,
+            )
+    except Exception as e:
+        log.error(f"❌  set_setting xatosi ({key}={value}): {e}")
+        raise

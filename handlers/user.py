@@ -5,7 +5,7 @@ from aiogram.filters import CommandStart
 from aiogram.exceptions import TelegramBadRequest
 
 from config import CHANNEL_ID, MAX_PARTICIPANTS
-from database import add_participant, get_count, is_registered
+from database import add_participant, get_count, is_registered, get_setting
 from keyboards import subscribe_kb, main_menu_kb, registered_kb, contact_kb, progress_bar
 from logger import log
 
@@ -138,9 +138,10 @@ async def handle_contact(message: Message, bot: Bot) -> None:
         return
 
     if await is_registered(user.id):
+        channel = await get_setting("channel")
         await message.answer(
             "ℹ️ Siz allaqachon konkurs ishtirokchisiz.",
-            reply_markup=registered_kb(),
+            reply_markup=registered_kb(channel),
         )
         return
 
@@ -171,23 +172,27 @@ async def handle_contact(message: Message, bot: Bot) -> None:
         return
 
     if not added:
+        channel = await get_setting("channel")
         await message.answer(
             "ℹ️ Siz allaqachon konkurs ishtirokchisiz.",
-            reply_markup=registered_kb(),
+            reply_markup=registered_kb(channel),
         )
         return
 
     new_count = await get_count()
     bar = progress_bar(new_count, MAX_PARTICIPANTS)
+    channel = await get_setting("channel")
+    channel_line = f"\n📢 G'olib {channel} kanalida aniqlanadi!" if channel else ""
 
     await message.answer(
         "✅ Siz muvaffaqiyatli konkursda qatnashdingiz!\n\n"
         f"👤 Ism: <b>{user.full_name}</b>\n"
         f"📱 Raqam: <code>{contact.phone_number}</code>\n\n"
         f"👥 Ishtirokchilar: <b>{new_count}/{MAX_PARTICIPANTS}</b>\n"
-        f"<code>{bar}</code>\n\n"
+        f"<code>{bar}</code>"
+        f"{channel_line}\n\n"
         "🍀 Omad tilaymiz!",
-        reply_markup=registered_kb(),
+        reply_markup=registered_kb(channel),
     )
     log.info(f"✅  Yangi ishtirokchi: {user.full_name} ({user.id})")
 
