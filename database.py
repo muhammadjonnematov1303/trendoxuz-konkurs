@@ -35,9 +35,25 @@ async def get_pool() -> asyncpg.Pool:
             min_size=1,
             max_size=5,
             command_timeout=30,
+            # Neon bepul tier 5 daqiqada idle connection'larni yopadi.
+            # 60s dan keyin pool o'zi connection'ni yangilaydi — timeout oldini oladi.
+            max_inactive_connection_lifetime=60.0,
         )
         log.info("🔌  PostgreSQL pool yaratildi")
     return _pool
+
+
+async def ping() -> bool:
+    """DB jonligini tekshirish. Keepalive task ishlatadi."""
+    try:
+        pool = await get_pool()
+        await pool.fetchval("SELECT 1")
+        return True
+    except Exception as e:
+        log.warning(f"⚠️  DB ping xato, pool qayta yaratiladi: {e}")
+        global _pool
+        _pool = None   # keyingi so'rovda yangi pool ochiladi
+        return False
 
 
 async def close_pool() -> None:
