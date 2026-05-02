@@ -10,13 +10,18 @@ _pool: asyncpg.Pool | None = None
 
 def _make_dsn() -> tuple[str, ssl.SSLContext | None]:
     """
-    Neon / Supabase connection string'larida ?sslmode=require bo'ladi.
-    asyncpg uni DSN'dan o'qimaydi — alohida ssl context kerak.
+    asyncpg DSN'dan sslmode va channel_binding parametrlarini o'qimaydi —
+    SSL alohida context orqali uzatiladi, noto'g'ri parametrlar olib tashlanadi.
     """
     ssl_ctx = None
     if "sslmode=require" in DATABASE_URL or "sslmode=verify-full" in DATABASE_URL:
         ssl_ctx = ssl.create_default_context()
-    clean = re.sub(r"[?&]sslmode=[^&]*", "", DATABASE_URL)
+
+    clean = DATABASE_URL
+    for param in ("sslmode", "channel_binding"):
+        clean = re.sub(rf"[?&]{param}=[^&]*", "", clean)
+    clean = re.sub(r"\?$", "", clean)   # bo'sh ? ni olib tashlash
+    clean = re.sub(r"&&", "&", clean)   # qo'shaloq & ni tozalash
     return clean, ssl_ctx
 
 
