@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import aiosqlite
 from datetime import datetime, timezone
@@ -6,6 +7,11 @@ from logger import log
 
 
 async def init_db() -> None:
+    # DB fayli uchun papkani yaratish (masalan /data Render'da)
+    db_dir = os.path.dirname(os.path.abspath(DB_PATH))
+    os.makedirs(db_dir, exist_ok=True)
+    log.info(f"📁  DB papkasi: {db_dir}")
+
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             # WAL mode: parallel read, tez yozish
