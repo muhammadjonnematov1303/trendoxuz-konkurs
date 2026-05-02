@@ -1,11 +1,9 @@
-import asyncio
 import json
-import signal
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import Update
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from config import BOT_TOKEN, WEBHOOK_PATH, WEBHOOK_URL, PORT
 from database import init_db
@@ -18,21 +16,12 @@ dp.include_router(user.router)
 dp.include_router(admin.router)
 
 
-# ── Web handlers ──────────────────────────────────────────────────────────────
-
-async def handle_webhook(request: web.Request) -> web.Response:
-    try:
-        data = await request.json()
-        update = Update(**data)
-        await dp.feed_update(bot, update)
-    except Exception as e:
-        log.error(f"❌  Webhook xatosi: {e}")
-    return web.Response()
-
+# ── Qo'shimcha endpointlar ────────────────────────────────────────────────────
 
 async def handle_health(request: web.Request) -> web.Response:
-    me = request.app["bot_info"]
-    body = json.dumps({"status": "ok", "bot": f"@{me.username}"})
+    me = request.app.get("bot_info")
+    username = f"@{me.username}" if me else "unknown"
+    body = json.dumps({"status": "ok", "bot": username})
     return web.Response(text=body, content_type="application/json")
 
 
@@ -44,42 +33,70 @@ async def handle_root(request: web.Request) -> web.Response:
 # ── Startup / Shutdown ────────────────────────────────────────────────────────
 
 async def on_startup(app: web.Application) -> None:
+    log.info(f"🚀  Server ishga tushmoqda (port: {PORT})")
+
     await init_db()
 
-    me = await bot.get_me()
-    app["bot_info"] = me
-    log.info(f"🤖  Bot: @{me.username} (ID: {me.id})")
+    try:
+        me = await bot.get_me()
+        app["bot_info"] = me
+        log.info(f"🤖  Bot: @{me.username} (ID: {me.id})")
+    except Exception as e:
+        log.error(f"❌  Bot ma'lumotini olishda xato: {e}")
+        log.error("❌  BOT_TOKEN noto'g'ri bo'lishi mumkin!")
+        raise
 
-    await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-    log.info(f"🔗  Webhook o'rnatildi: {WEBHOOK_URL}")
+    try:
+        await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+        log.info(f"🔗  Webhook o'rnatildi: {WEBHOOK_URL}")
 
-    info = await bot.get_webhook_info()
-    if info.url == WEBHOOK_URL:
-        log.info("✅  Webhook tasdiqlandi")
-    else:
-        log.warning(f"⚠️  Webhook manzili mos emas: {info.url}")
+        info = await bot.get_webhook_info()
+        if info.url == WEBHOOK_URL:
+            log.info("✅  Webhook tasdiqlandi — bot tayyor!")
+        else:
+            log.warning(f"⚠️  Webhook manzili kutilgancha emas: {info.url}")
+    except Exception as e:
+        log.error(f"❌  Webhook o'rnatishda xato: {e}")
+        log.error(f"❌  WEBHOOK_HOST to'g'riligini tekshiring: {WEBHOOK_URL}")
+        raise
 
 
 async def on_shutdown(app: web.Application) -> None:
     log.info("🛑  Server o'chirilmoqda...")
-    await bot.delete_webhook()
-    await bot.session.close()
-    log.info("✅  Webhook o'chirildi, ulanish yopildi")
+    try:
+        await bot.delete_webhook()
+        log.info("✅  Webhook o'chirildi")
+    except Exception as e:
+        log.warning(f"⚠️  Webhook o'chirishda xato: {e}")
+    finally:
+        await bot.session.close()
+        log.info("✅  Bot sessiyasi yopildi")
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
 def create_app() -> web.Application:
     app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
+    # aiogram native webhook handler
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+
     app.router.add_get("/health", handle_health)
     app.router.add_get("/", handle_root)
+
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
+
+    setup_application(app, dp, bot=bot)
     return app
 
 
 if __name__ == "__main__":
-    log.info(f"🚀  TrendoX Giveaway Bot ishga tushmoqda (port: {PORT})")
+    log.info("=" * 50)
+    log.info("🤖  TrendoX Giveaway Bot v2.1")
+    log.info(f"🌐  WEBHOOK_URL: {WEBHOOK_URL}")
+    log.info(f"🔌  PORT: {PORT}")
+    log.info("=" * 50)
+
     app = create_app()
     web.run_app(app, host="0.0.0.0", port=PORT, print=None)
