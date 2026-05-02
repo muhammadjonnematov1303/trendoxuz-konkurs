@@ -1,4 +1,3 @@
-import asyncio
 import time
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
@@ -7,18 +6,16 @@ from aiogram.exceptions import TelegramBadRequest
 
 from config import CHANNEL_ID, MAX_PARTICIPANTS
 from database import add_participant, get_count, is_registered
-from keyboards import subscribe_kb, main_menu_kb, contact_kb, stats_kb
+from keyboards import subscribe_kb, main_menu_kb, registered_kb, contact_kb, progress_bar
 from logger import log
 
 router = Router()
 
-# Per-user cooldown: {user_id: last_action_timestamp}
 _cooldown: dict[int, float] = {}
 COOLDOWN_SECONDS = 2
 
 
 def _check_cooldown(user_id: int) -> bool:
-    """Returns True if user can proceed, False if still in cooldown."""
     now = time.monotonic()
     if now - _cooldown.get(user_id, 0) < COOLDOWN_SECONDS:
         return False
@@ -34,45 +31,34 @@ async def _is_subscribed(bot: Bot, user_id: int) -> bool:
         return False
 
 
-def _welcome_text(full_name: str, count: int) -> str:
-    filled = round(count / MAX_PARTICIPANTS * 12) if MAX_PARTICIPANTS else 0
-    bar = "▓" * filled + "░" * (12 - filled)
+def _welcome_text(name: str, count: int) -> str:
+    bar = progress_bar(count, MAX_PARTICIPANTS)
     return (
-        f"<b>SALOM, {full_name.upper()}! 👋</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🎊 TrendoX Giveaway Bot'ga xush kelibsiz!\n\n"
-        f"📊 Hozirgi holat:\n"
-        f"  👥 Ishtirokchilar: <b>{count}/{MAX_PARTICIPANTS}</b>\n"
-        f"  [{bar}]\n\n"
-        f"Konkursga ishtirok etish uchun quyidagi tugmani bosing."
+        f"👋 Salom, <b>{name}</b>!\n\n"
+        f"🎁 TrendoX Giveaway konkursiga xush kelibsiz.\n\n"
+        f"👥 Ishtirokchilar: <b>{count}/{MAX_PARTICIPANTS}</b>\n"
+        f"<code>{bar}</code>\n\n"
+        f"Ishtirok etish uchun quyidagi tugmani bosing."
     )
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, bot: Bot) -> None:
     user = message.from_user
-    if not user:
-        return
-
-    if not _check_cooldown(user.id):
+    if not user or not _check_cooldown(user.id):
         return
 
     subscribed = await _is_subscribed(bot, user.id)
     count = await get_count()
 
     if subscribed:
-        await message.answer(
-            _welcome_text(user.full_name, count),
-            reply_markup=main_menu_kb(),
-            parse_mode="HTML",
-        )
+        await message.answer(_welcome_text(user.full_name, count), reply_markup=main_menu_kb())
     else:
         await message.answer(
-            f"<b>XUSH KELIBSIZ! 👋</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n\n"
-            f"Konkursga ishtirok etish uchun avval kanalimizga obuna bo'ling.",
+            "👋 Xush kelibsiz!\n\n"
+            "🎁 TrendoX Giveaway konkursiga qatnashish uchun\n"
+            "avval rasmiy kanalimizga obuna bo'lishingiz kerak.",
             reply_markup=subscribe_kb(),
-            parse_mode="HTML",
         )
 
 
@@ -83,13 +69,12 @@ async def check_subscription(callback: CallbackQuery, bot: Bot) -> None:
         return
 
     if not _check_cooldown(user.id):
-        await callback.answer("Iltimos, biroz kuting...", show_alert=False)
+        await callback.answer("Biroz kuting...", show_alert=False)
         return
 
-    subscribed = await _is_subscribed(bot, user.id)
-    if not subscribed:
+    if not await _is_subscribed(bot, user.id):
         await callback.answer(
-            "❌ Obuna topilmadi. Avval kanalga obuna bo'ling!",
+            "❌ Obuna topilmadi.\nAvval kanalga obuna bo'ling va qayta bosing.",
             show_alert=True,
         )
         return
@@ -100,7 +85,6 @@ async def check_subscription(callback: CallbackQuery, bot: Bot) -> None:
         await callback.message.edit_text(
             _welcome_text(user.full_name, count),
             reply_markup=main_menu_kb(),
-            parse_mode="HTML",
         )
     except TelegramBadRequest:
         pass
@@ -113,68 +97,62 @@ async def join_contest(callback: CallbackQuery, bot: Bot) -> None:
         return
 
     if not _check_cooldown(user.id):
-        await callback.answer("Iltimos, biroz kuting...", show_alert=False)
+        await callback.answer("Biroz kuting...", show_alert=False)
         return
 
-    subscribed = await _is_subscribed(bot, user.id)
-    if not subscribed:
+    if not await _is_subscribed(bot, user.id):
         await callback.answer("❌ Avval kanalga obuna bo'ling!", show_alert=True)
         return
 
     if await is_registered(user.id):
-        await callback.answer("ℹ️ Siz allaqachon ro'yxatdasiz!", show_alert=True)
+        await callback.answer("ℹ️ Siz allaqachon ishtirokchisiz!", show_alert=True)
         return
 
     count = await get_count()
     if count >= MAX_PARTICIPANTS:
-        await callback.answer("❌ Ishtirokchilar limiti to'ldi!", show_alert=True)
+        await callback.answer("❌ Ishtirokchilar to'ldi. Keyingi konkursni kuting.", show_alert=True)
         return
 
     await callback.answer()
     await callback.message.answer(
-        "<b>📱 TELEFON RAQAM</b>\n"
-        "━━━━━━━━━━━━━━━━━━━\n\n"
-        "Ro'yxatdan o'tish uchun telefon raqamingizni ulashing.\n\n"
-        "⬇️ Quyidagi tugmani bosing:",
+        "📱 <b>Telefon raqam</b>\n\n"
+        "Ro'yxatdan o'tish uchun telefon raqamingizni ulashing.\n"
+        "Quyidagi tugmani bosing 👇",
         reply_markup=contact_kb(),
-        parse_mode="HTML",
     )
 
 
 @router.message(F.contact)
-async def handle_contact(message: Message) -> None:
+async def handle_contact(message: Message, bot: Bot) -> None:
     user = message.from_user
     contact = message.contact
 
     if not user or not contact:
         return
 
-    # Faqat o'z raqamini ulashishi mumkin
     if contact.user_id != user.id:
         await message.answer(
-            "❌ Iltimos, faqat o'z telefon raqamingizni ulashing.",
-            parse_mode="HTML",
+            "❌ Faqat o'z telefon raqamingizni ulashing.",
+            reply_markup=contact_kb(),
         )
         return
 
     if await is_registered(user.id):
         await message.answer(
-            "ℹ️ Siz allaqachon ro'yxatdasiz!",
-            parse_mode="HTML",
+            "ℹ️ Siz allaqachon konkurs ishtirokchisiz.",
+            reply_markup=registered_kb(),
         )
         return
 
     count = await get_count()
     if count >= MAX_PARTICIPANTS:
-        await message.answer("❌ Ishtirokchilar limiti to'ldi!")
+        await message.answer("❌ Ishtirokchilar to'ldi. Keyingi konkursni kuting.")
         return
 
-    subscribed = await _is_subscribed(message.bot, user.id)
-    if not subscribed:
+    if not await _is_subscribed(bot, user.id):
         await message.answer(
-            "❌ Avval kanalga obuna bo'ling!",
+            "❌ Avval kanalga obuna bo'ling.",
             reply_markup=subscribe_kb(),
-            parse_mode="HTML",
         )
         return
 
@@ -186,25 +164,25 @@ async def handle_contact(message: Message) -> None:
     )
 
     if not added:
-        await message.answer("ℹ️ Siz allaqachon ro'yxatdasiz!")
+        await message.answer(
+            "ℹ️ Siz allaqachon konkurs ishtirokchisiz.",
+            reply_markup=registered_kb(),
+        )
         return
 
     new_count = await get_count()
-    filled = round(new_count / MAX_PARTICIPANTS * 12) if MAX_PARTICIPANTS else 0
-    bar = "▓" * filled + "░" * (12 - filled)
+    bar = progress_bar(new_count, MAX_PARTICIPANTS)
 
     await message.answer(
-        f"<b>🎊 MUVAFFAQIYATLI RO'YXATDAN O'TDINGIZ!</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n\n"
-        f"✅ Ismingiz: <b>{user.full_name}</b>\n"
+        "✅ Siz muvaffaqiyatli konkursda qatnashdingiz!\n\n"
+        f"👤 Ism: <b>{user.full_name}</b>\n"
         f"📱 Raqam: <code>{contact.phone_number}</code>\n\n"
-        f"📊 Ishtirokchilar: <b>{new_count}/{MAX_PARTICIPANTS}</b>\n"
-        f"[{bar}]\n\n"
-        f"🍀 Omad tilaymiz!",
-        reply_markup=main_menu_kb(),
-        parse_mode="HTML",
+        f"👥 Ishtirokchilar: <b>{new_count}/{MAX_PARTICIPANTS}</b>\n"
+        f"<code>{bar}</code>\n\n"
+        "🍀 Omad tilaymiz!",
+        reply_markup=registered_kb(),
     )
-    log.info(f"✅  Yangi ishtirokchi: {user.full_name} (ID: {user.id})")
+    log.info(f"✅  Yangi ishtirokchi: {user.full_name} ({user.id})")
 
 
 @router.callback_query(F.data == "noop")
