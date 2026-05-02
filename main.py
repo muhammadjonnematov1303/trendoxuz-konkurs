@@ -6,7 +6,7 @@ from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from config import BOT_TOKEN, WEBHOOK_PATH, WEBHOOK_URL, PORT
-from database import init_db
+from database import init_db, close_pool
 from handlers import user, admin
 from logger import log
 
@@ -81,11 +81,9 @@ async def on_startup(app: web.Application) -> None:
 
 async def on_shutdown(app: web.Application) -> None:
     log.info("🛑  Server to'xtatilmoqda...")
-    # Render restart'larida webhook o'chirmaslik kerak — Telegram uni saqlab qoladi
-    # va keyingi startup'da set_webhook idempotent ishlaydi
+    await close_pool()
     try:
         await bot.session.close()
-        log.info("✅  Bot sessiyasi yopildi")
     except Exception:
         pass
 

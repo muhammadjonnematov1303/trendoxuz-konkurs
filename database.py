@@ -1,50 +1,74 @@
-import os
-import sqlite3
-import aiosqlite
+import ssl
+import re
+import asyncpg
 from datetime import datetime, timezone
-from config import DB_PATH
+from config import DATABASE_URL
 from logger import log
+
+_pool: asyncpg.Pool | None = None
+
+
+def _make_dsn() -> tuple[str, ssl.SSLContext | None]:
+    """
+    Neon / Supabase connection string'larida ?sslmode=require bo'ladi.
+    asyncpg uni DSN'dan o'qimaydi — alohida ssl context kerak.
+    """
+    ssl_ctx = None
+    if "sslmode=require" in DATABASE_URL or "sslmode=verify-full" in DATABASE_URL:
+        ssl_ctx = ssl.create_default_context()
+    clean = re.sub(r"[?&]sslmode=[^&]*", "", DATABASE_URL)
+    return clean, ssl_ctx
+
+
+async def get_pool() -> asyncpg.Pool:
+    global _pool
+    if _pool is None:
+        dsn, ssl_ctx = _make_dsn()
+        _pool = await asyncpg.create_pool(
+            dsn,
+            ssl=ssl_ctx,
+            min_size=1,
+            max_size=5,
+            command_timeout=30,
+        )
+        log.info("🔌  PostgreSQL pool yaratildi")
+    return _pool
+
+
+async def close_pool() -> None:
+    global _pool
+    if _pool:
+        await _pool.close()
+        _pool = None
+        log.info("🔌  PostgreSQL pool yopildi")
 
 
 async def init_db() -> None:
-    # DB uchun papkani yaratish; ruxsat yo'q bo'lsa o'tkazib yuboriladi
-    db_dir = os.path.dirname(os.path.abspath(DB_PATH))
     try:
-        os.makedirs(db_dir, exist_ok=True)
-    except PermissionError:
-        log.warning(f"⚠️  '{db_dir}' papkasiga ruxsat yo'q — DB joriy papkada yaratiladi")
-
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            # WAL mode: parallel read, tez yozish
-            await db.execute("PRAGMA journal_mode=WAL")
-            await db.execute("PRAGMA synchronous=NORMAL")
-            await db.execute("PRAGMA foreign_keys=ON")
-
-            await db.execute("""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS participants (
-                    user_id    INTEGER PRIMARY KEY,
+                    user_id    BIGINT PRIMARY KEY,
                     username   TEXT,
                     full_name  TEXT NOT NULL,
                     phone      TEXT NOT NULL,
-                    joined_at  TEXT NOT NULL
+                    joined_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
-            await db.execute("""
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS activity_log (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id         BIGSERIAL PRIMARY KEY,
                     action     TEXT NOT NULL,
                     details    TEXT,
-                    created_at TEXT NOT NULL
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
-            # Tezlashtiruvchi index
-            await db.execute("""
-                CREATE INDEX IF NOT EXISTS idx_joined
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_participants_joined
                 ON participants(joined_at)
             """)
-            await db.commit()
-        log.info(f"✅  Ma'lumotlar bazasi tayyor: {DB_PATH}")
+        log.info("✅  PostgreSQL bazasi tayyor")
     except Exception as e:
         log.error(f"❌  DB init xatosi: {e}")
         raise
@@ -56,46 +80,37 @@ async def add_participant(
     full_name: str,
     phone: str,
 ) -> bool:
-    """
-    True  → muvaffaqiyatli qo'shildi
-    False → user allaqachon mavjud (duplicate)
-    Exception → boshqa DB xatosi (caller hal qiladi)
-    """
-    joined_at = datetime.now(timezone.utc).isoformat()
-
+    """True → saqlandi | False → duplicate | Exception → boshqa xato"""
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
                 """
                 INSERT INTO participants (user_id, username, full_name, phone, joined_at)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES ($1, $2, $3, $4, $5)
                 """,
-                (user_id, username, full_name, phone, joined_at),
+                user_id, username, full_name, phone, datetime.now(timezone.utc),
             )
-            await db.commit()
-    except sqlite3.IntegrityError:
-        # PRIMARY KEY (user_id) constraint: duplicate
+    except asyncpg.UniqueViolationError:
         return False
     except Exception as e:
-        log.error(f"❌  add_participant DB xatosi (user_id={user_id}): {e}")
+        log.error(f"❌  add_participant xatosi (user_id={user_id}): {e}")
         raise
 
-    # Log yozish natijaga ta'sir qilmasin
     try:
-        await _write_log("JOIN", f"user_id={user_id} | {full_name} | {phone}")
+        await write_log("JOIN", f"user_id={user_id} | {full_name} | {phone}")
     except Exception as e:
         log.warning(f"⚠️  Log yozishda xato: {e}")
 
-    log.info(f"💾  DB saqlandi: {full_name} (ID: {user_id})")
+    log.info(f"💾  Saqlandi: {full_name} (ID: {user_id})")
     return True
 
 
 async def get_count() -> int:
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT COUNT(*) FROM participants") as cur:
-                row = await cur.fetchone()
-                return row[0] if row else 0
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval("SELECT COUNT(*) FROM participants") or 0
     except Exception as e:
         log.error(f"❌  get_count xatosi: {e}")
         return 0
@@ -103,11 +118,12 @@ async def get_count() -> int:
 
 async def is_registered(user_id: int) -> bool:
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT 1 FROM participants WHERE user_id=?", (user_id,)
-            ) as cur:
-                return await cur.fetchone() is not None
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM participants WHERE user_id = $1", user_id
+            )
+            return row is not None
     except Exception as e:
         log.error(f"❌  is_registered xatosi: {e}")
         return False
@@ -115,14 +131,13 @@ async def is_registered(user_id: int) -> bool:
 
 async def get_all_participants() -> list[dict]:
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
                 "SELECT user_id, username, full_name, phone, joined_at "
                 "FROM participants ORDER BY joined_at"
-            ) as cur:
-                rows = await cur.fetchall()
-                return [dict(r) for r in rows]
+            )
+            return [dict(r) for r in rows]
     except Exception as e:
         log.error(f"❌  get_all_participants xatosi: {e}")
         return []
@@ -130,15 +145,14 @@ async def get_all_participants() -> list[dict]:
 
 async def get_random_winners(n: int = 1) -> list[dict]:
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
                 "SELECT user_id, username, full_name, phone "
-                "FROM participants ORDER BY RANDOM() LIMIT ?",
-                (n,),
-            ) as cur:
-                rows = await cur.fetchall()
-                return [dict(r) for r in rows]
+                "FROM participants ORDER BY RANDOM() LIMIT $1",
+                n,
+            )
+            return [dict(r) for r in rows]
     except Exception as e:
         log.error(f"❌  get_random_winners xatosi: {e}")
         return []
@@ -146,47 +160,39 @@ async def get_random_winners(n: int = 1) -> list[dict]:
 
 async def clear_participants() -> int:
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT COUNT(*) FROM participants") as cur:
-                row = await cur.fetchone()
-                count = row[0] if row else 0
-            await db.execute("DELETE FROM participants")
-            await db.commit()
-        await _write_log("CLEAR", f"O'chirildi: {count} ta ishtirokchi")
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM participants") or 0
+            await conn.execute("DELETE FROM participants")
+        await write_log("CLEAR", f"O'chirildi: {count} ta ishtirokchi")
         return count
     except Exception as e:
         log.error(f"❌  clear_participants xatosi: {e}")
         raise
 
 
-async def _write_log(action: str, details: str = "") -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO activity_log (action, details, created_at) VALUES (?, ?, ?)",
-            (action, details, datetime.now(timezone.utc).isoformat()),
-        )
-        await db.commit()
-
-
-# Public alias (handlers ishlatadi)
 async def write_log(action: str, details: str = "") -> None:
     try:
-        await _write_log(action, details)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO activity_log (action, details, created_at) VALUES ($1, $2, $3)",
+                action, details, datetime.now(timezone.utc),
+            )
     except Exception as e:
         log.warning(f"⚠️  write_log xatosi: {e}")
 
 
 async def get_recent_logs(limit: int = 40) -> list[dict]:
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
                 "SELECT action, details, created_at FROM activity_log "
-                "ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ) as cur:
-                rows = await cur.fetchall()
-                return [dict(r) for r in rows]
+                "ORDER BY id DESC LIMIT $1",
+                limit,
+            )
+            return [dict(r) for r in rows]
     except Exception as e:
         log.error(f"❌  get_recent_logs xatosi: {e}")
         return []
